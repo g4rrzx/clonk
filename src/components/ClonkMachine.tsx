@@ -1,41 +1,18 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useAccount, useConnect, useReadContract, useWriteContract } from "wagmi";
+import { useAccount, useReadContract, useWriteContract } from "wagmi";
 import { formatEther } from "viem";
-import sdk from "@farcaster/frame-sdk";
-import { farcasterFrame } from "@farcaster/frame-wagmi-connector";
 import { CLONK_ABI, CLONK_CONFIG } from "@/lib/config";
 
 export function ClonkMachine() {
   const { address, isConnected } = useAccount();
-  const { connect } = useConnect();
   const { writeContractAsync } = useWriteContract();
 
   const [claiming, setClaiming] = useState(false);
   const [showCoin, setShowCoin] = useState(false);
+  const [hitAnim, setHitAnim] = useState(false);
   const [countdown, setCountdown] = useState("");
-  const [fid, setFid] = useState<number | null>(null);
-  const [username, setUsername] = useState<string>("");
-
-  // Get Farcaster context
-  useEffect(() => {
-    const getContext = async () => {
-      const ctx = await sdk.context;
-      if (ctx?.user) {
-        setFid(ctx.user.fid);
-        setUsername(ctx.user.username || "");
-      }
-    };
-    getContext();
-  }, []);
-
-  // Auto-connect wallet
-  useEffect(() => {
-    if (!isConnected) {
-      connect({ connector: farcasterFrame() });
-    }
-  }, [isConnected, connect]);
 
   // Read contract state
   const { data: canClaimData, refetch: refetchCanClaim } = useReadContract({
@@ -43,6 +20,7 @@ export function ClonkMachine() {
     abi: CLONK_ABI,
     functionName: "canClaim",
     args: address ? [address] : undefined,
+    query: { enabled: !!address },
   });
 
   const { data: userData, refetch: refetchUser } = useReadContract({
@@ -50,6 +28,7 @@ export function ClonkMachine() {
     abi: CLONK_ABI,
     functionName: "users",
     args: address ? [address] : undefined,
+    query: { enabled: !!address },
   });
 
   const { data: claimAmount } = useReadContract({
@@ -57,6 +36,7 @@ export function ClonkMachine() {
     abi: CLONK_ABI,
     functionName: "getClaimAmount",
     args: address ? [address] : undefined,
+    query: { enabled: !!address },
   });
 
   const { data: balance } = useReadContract({
@@ -64,13 +44,15 @@ export function ClonkMachine() {
     abi: CLONK_ABI,
     functionName: "balanceOf",
     args: address ? [address] : undefined,
+    query: { enabled: !!address },
   });
 
-  const { data: timeUntil } = useReadContract({
+  const { data: timeUntil, refetch: refetchTime } = useReadContract({
     address: CLONK_CONFIG.contractAddress,
     abi: CLONK_ABI,
     functionName: "timeUntilClaim",
     args: address ? [address] : undefined,
+    query: { enabled: !!address },
   });
 
   // Countdown timer
@@ -80,20 +62,23 @@ export function ClonkMachine() {
       return;
     }
 
-    const updateCountdown = () => {
-      const seconds = Number(timeUntil);
-      const h = Math.floor(seconds / 3600);
-      const m = Math.floor((seconds % 3600) / 60);
-      const s = seconds % 60;
-      setCountdown(`${h}h ${m}m ${s}s`);
+    const endTime = Date.now() + Number(timeUntil) * 1000;
+
+    const update = () => {
+      const remaining = Math.max(0, Math.floor((endTime - Date.now()) / 1000));
+      if (remaining === 0) {
+        setCountdown("");
+        refetchCanClaim();
+        return;
+      }
+      const h = Math.floor(remaining / 3600);
+      const m = Math.floor((remaining % 3600) / 60);
+      const s = remaining % 60;
+      setCountdown(`${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`);
     };
 
-    updateCountdown();
-    const interval = setInterval(() => {
-      refetchCanClaim();
-      updateCountdown();
-    }, 1000);
-
+    update();
+    const interval = setInterval(update, 1000);
     return () => clearInterval(interval);
   }, [timeUntil, refetchCanClaim]);
 
@@ -101,12 +86,14 @@ export function ClonkMachine() {
     if (!address || !canClaimData || claiming) return;
 
     setClaiming(true);
+    setHitAnim(true);
+    setTimeout(() => setHitAnim(false), 300);
+
     try {
-      // Get signature from backend
       const res = await fetch("/api/claim", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address, fid }),
+        body: JSON.stringify({ address }),
       });
 
       if (!res.ok) {
@@ -116,7 +103,6 @@ export function ClonkMachine() {
 
       const { amount, nonce, deadline, signature } = await res.json();
 
-      // Send transaction
       await writeContractAsync({
         address: CLONK_CONFIG.contractAddress,
         abi: CLONK_ABI,
@@ -124,19 +110,16 @@ export function ClonkMachine() {
         args: [BigInt(amount), BigInt(nonce), BigInt(deadline), signature as `0x${string}`],
       });
 
-      // Show coin animation
       setShowCoin(true);
-      setTimeout(() => setShowCoin(false), 1500);
+      setTimeout(() => setShowCoin(false), 2000);
 
-      // Refresh data
-      await Promise.all([refetchCanClaim(), refetchUser()]);
+      await Promise.all([refetchCanClaim(), refetchUser(), refetchTime()]);
     } catch (err: any) {
       console.error("Claim error:", err);
-      // Could show toast here
     } finally {
       setClaiming(false);
     }
-  }, [address, canClaimData, claiming, fid, writeContractAsync, refetchCanClaim, refetchUser]);
+  }, [address, canClaimData, claiming, writeContractAsync, refetchCanClaim, refetchUser, refetchTime]);
 
   const canClaim = canClaimData === true;
   const streak = userData ? Number(userData[1]) : 0;
@@ -144,77 +127,90 @@ export function ClonkMachine() {
   const currentBalance = balance ? formatEther(balance) : "0";
   const nextClaimAmount = claimAmount ? formatEther(claimAmount) : "100";
 
-  return (
-    <div className="h-dvh flex flex-col items-center justify-between py-8 px-4">
-      {/* Header */}
-      <div className="text-center">
-        <h1 className="text-2xl font-bold text-clonk-accent">🔨 CLONK</h1>
-        <p className="text-sm text-clonk-text/60 mt-1">The Daily Clonk Machine</p>
-        {username && (
-          <p className="text-xs text-clonk-text/40 mt-1">@{username}</p>
-        )}
+  if (!isConnected) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-4">
+        <div className="text-center">
+          <div className="text-6xl mb-4 animate-float">🔨</div>
+          <h2 className="text-xl font-black text-primary mb-2">Connect to Clonk</h2>
+          <p className="text-base-content/60 text-sm">
+            Connect your wallet to start clonking daily
+          </p>
+        </div>
       </div>
+    );
+  }
 
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-4 w-full max-w-sm">
-        <div className="bg-clonk-card rounded-xl p-3 text-center">
-          <p className="text-xs text-clonk-text/60">Balance</p>
-          <p className="text-lg font-bold text-clonk-gold">
+  return (
+    <div className="flex-1 flex flex-col items-center justify-between py-6 px-4">
+      {/* Stats Row */}
+      <div className="grid grid-cols-3 gap-3 w-full max-w-sm">
+        <div className="stat-card">
+          <p className="text-[10px] uppercase tracking-wider text-base-content/50 mb-1">Balance</p>
+          <p className="text-lg font-black text-secondary">
             {Number(currentBalance).toLocaleString(undefined, { maximumFractionDigits: 0 })}
           </p>
         </div>
-        <div className="bg-clonk-card rounded-xl p-3 text-center">
-          <p className="text-xs text-clonk-text/60">Streak</p>
-          <p className="text-lg font-bold text-clonk-accent">{streak}🔥</p>
+        <div className="stat-card">
+          <p className="text-[10px] uppercase tracking-wider text-base-content/50 mb-1">Streak</p>
+          <p className="text-lg font-black text-primary">
+            {streak} <span className="text-sm">🔥</span>
+          </p>
         </div>
-        <div className="bg-clonk-card rounded-xl p-3 text-center">
-          <p className="text-xs text-clonk-text/60">Next</p>
-          <p className="text-lg font-bold text-clonk-text">
+        <div className="stat-card">
+          <p className="text-[10px] uppercase tracking-wider text-base-content/50 mb-1">Next Claim</p>
+          <p className="text-lg font-black text-base-content">
             {Number(nextClaimAmount).toLocaleString(undefined, { maximumFractionDigits: 0 })}
           </p>
         </div>
       </div>
 
-      {/* Clonk Button */}
-      <div className="relative">
+      {/* Clonk Button Area */}
+      <div className="relative flex flex-col items-center">
+        {/* Coin animation */}
         {showCoin && (
-          <div className="absolute -top-12 left-1/2 -translate-x-1/2 coin-animation">
+          <div className="absolute -top-16 animate-coin-drop flex items-center gap-1">
             <span className="text-3xl">🪙</span>
-            <span className="text-clonk-gold font-bold ml-1">+{nextClaimAmount}</span>
+            <span className="text-secondary font-black text-lg">+{Number(nextClaimAmount).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
           </div>
         )}
 
+        {/* The Button */}
         <button
           onClick={handleClaim}
           disabled={!canClaim || claiming}
-          className={`clonk-button ${!canClaim || claiming ? "disabled" : ""}`}
+          className={`clonk-button ${!canClaim || claiming ? "disabled" : "animate-pulse-glow"} ${hitAnim ? "animate-clonk-hit" : ""}`}
         >
           <div className="text-center">
             {claiming ? (
-              <div className="text-4xl animate-spin">⚙️</div>
+              <span className="loading loading-spinner loading-lg text-white"></span>
             ) : canClaim ? (
               <>
                 <div className="text-5xl">🔨</div>
-                <p className="text-sm font-bold mt-2 text-white">CLONK IT</p>
+                <p className="text-sm font-black mt-2 text-white/90 tracking-wider">CLONK IT</p>
               </>
             ) : (
               <>
-                <div className="text-3xl">⏳</div>
-                <p className="text-xs mt-2 text-white/60">{countdown}</p>
+                <div className="text-3xl mb-1">⏳</div>
+                <p className="text-lg font-mono font-bold text-white/80">{countdown}</p>
               </>
             )}
           </div>
         </button>
-      </div>
 
-      {/* Streak info */}
-      <div className="text-center space-y-2">
+        {/* Streak bonus indicator */}
         {streak >= 7 && (
-          <div className="streak-badge inline-block">
-            {streak >= 30 ? "🏆 5x BONUS" : "⚡ 2x BONUS"}
+          <div className="mt-4">
+            <span className="streak-badge">
+              {streak >= 30 ? "🏆 5x MEGA BONUS" : "⚡ 2x STREAK BONUS"}
+            </span>
           </div>
         )}
-        <p className="text-xs text-clonk-text/40">
+      </div>
+
+      {/* Bottom info */}
+      <div className="text-center space-y-1">
+        <p className="text-xs text-base-content/40">
           Total claimed: {Number(totalClaimed).toLocaleString(undefined, { maximumFractionDigits: 0 })} CLONK
         </p>
         {CLONK_CONFIG.contractAddress && (
@@ -222,7 +218,7 @@ export function ClonkMachine() {
             href={`https://app.uniswap.org/swap?outputCurrency=${CLONK_CONFIG.contractAddress}&chain=base`}
             target="_blank"
             rel="noopener"
-            className="text-xs text-clonk-accent underline"
+            className="text-xs text-primary hover:underline"
           >
             Trade on Uniswap →
           </a>

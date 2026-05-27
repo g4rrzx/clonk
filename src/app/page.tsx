@@ -1,10 +1,10 @@
 import { Providers } from "@/components/Providers";
-import { ClonkMachine } from "@/components/ClonkMachine";
+import { AppShell } from "@/components/AppShell";
 
 export default function Home() {
   return (
     <Providers>
-      <ClonkMachine />
+      <AppShell />
     </Providers>
   );
 }
