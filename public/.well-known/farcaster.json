@@ -1,0 +1,16 @@
+{
+  "accountAssociation": {
+    "header": "PLACEHOLDER_HEADER",
+    "payload": "PLACEHOLDER_PAYLOAD",
+    "signature": "PLACEHOLDER_SIGNATURE"
+  },
+  "frame": {
+    "version": "1",
+    "name": "CLONK - The Daily Clonk Machine",
+    "iconUrl": "https://clonk.vercel.app/icon.png",
+    "homeUrl": "https://clonk.vercel.app",
+    "splashImageUrl": "https://clonk.vercel.app/splash.png",
+    "splashBackgroundColor": "#0a0a0f",
+    "webhookUrl": "https://clonk.vercel.app/api/webhook"
+  }
+}
